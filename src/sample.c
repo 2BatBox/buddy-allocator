@@ -12,7 +12,7 @@ int main() {
 	void* mem = malloc(size);
 	assert(mem);
 
-	buddy_allocator_t* ba = buddy_allocator_create(mem, size);
+	BuddyAllocator_t* ba = buddy_allocator_create(mem, size);
 
 	buddy_allocator_dump(ba);
 

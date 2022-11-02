@@ -290,5 +290,5 @@ int main() {
 	test_dlist_push_after(&list, storage, STORAGE_SIZE);
 	test_dlist_remove(&list, storage, STORAGE_SIZE);
 	test_dlist_reset(&list, storage, STORAGE_SIZE);
-	return 0;
+	return EXIT_SUCCESS;
 }
