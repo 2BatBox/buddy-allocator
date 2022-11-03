@@ -44,8 +44,8 @@ struct ChunkHeader {
 	struct ChunkHeader* next;
 	Rank_t rank;
 	bool busy;
-	// TODO: No padding is used since no memory alignment restrictions are specified.
-};
+}; // TODO: No aligner is used since no memory alignment restrictions are specified.
+
 
 typedef struct ChunkHeader ChunkHdr_t;
 typedef ChunkHdr_t DListNode_t;
