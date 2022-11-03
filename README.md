@@ -13,5 +13,4 @@ make
 ```  
 ./test_dlist
 ./test_buddy_allocator
-./sample
 ```

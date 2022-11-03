@@ -74,6 +74,14 @@ typedef struct {
 // ====================================
 
 /**
+ * @param ins The buddy allocator instance pointer. MUST NOT be null.
+ * @return The maximum chunk size that can be allocated.
+ */
+size_t buddy_allocator_capacity_max(const BuddyAllocator_t* const ins) {
+	return (1ull << ins->raw_memory_rank) - sizeof(ChunkHdr_t);
+}
+
+/**
  * Translates a user pointer to its header pointer including NULL.
  */
 static inline ChunkHdr_t* __buddy_allocator_header_ptr(void* user_ptr) {
@@ -86,11 +94,15 @@ static inline ChunkHdr_t* __buddy_allocator_header_ptr(void* user_ptr) {
 }
 
 /**
- * Translates a header pointer to its user pointer.
+ * Translates a header pointer to its user pointer including NULL.
  */
 static inline void* __buddy_allocator_user_ptr(ChunkHdr_t* const chunk) {
-	uint8_t* const u8ptr = (uint8_t* const)chunk;
-	return (void*)(u8ptr + sizeof(ChunkHdr_t));
+	void* result = NULL;
+	if(chunk) {
+		uint8_t* const u8ptr = (uint8_t* const) chunk;
+		result = (void*) (u8ptr + sizeof(ChunkHdr_t));
+	}
+	return result;
 }
 
 /**
@@ -144,7 +156,7 @@ static inline void __buddy_allocator_push_chunk(BuddyAllocator_t* const ins, Chu
 	const BucketId_t bucket = chunk->rank - __BUDDY_ALLOCATOR_RANK_MIN;
 	ChunkHdr_t* const buddy = __buddy_allocator_buddy(ins, chunk);
 
-	if(buddy && !(buddy->busy)) {
+	if(buddy && !(buddy->busy) && buddy->rank == chunk->rank) {
 		ChunkHdr_t* const parent = chunk < buddy ? chunk : buddy;
 		dlist_remove(ins->buckets + bucket, buddy);
 		parent->rank++;
@@ -158,23 +170,34 @@ static inline void __buddy_allocator_push_chunk(BuddyAllocator_t* const ins, Chu
 
 /**
  * Pops a chunk from the free list.
+ * May returns NULL.
  */
 static inline ChunkHdr_t* __buddy_allocator_pop_chunk(BuddyAllocator_t* const ins, const Rank_t rank) {
-
-	// TODO:
-
 	ChunkHdr_t* result = NULL;
-	if(rank <= ins->raw_memory_rank) {
-
+	if(rank >= __BUDDY_ALLOCATOR_RANK_MIN && rank <= ins->raw_memory_rank) {
 		const BucketId_t bucket = rank - __BUDDY_ALLOCATOR_RANK_MIN;
 		DList_t* const list = ins->buckets + bucket;
 
 		if(dlist_empty(list)) {
-			ChunkHdr_t* const parent = __buddy_allocator_pop_chunk(ins, (Rank_t) (rank + 1u));
+
+			result = __buddy_allocator_pop_chunk(ins, (Rank_t) (rank + 1u));
+			if(result) {
+				result->rank = rank;
+
+				ChunkHdr_t* const buddy = __buddy_allocator_buddy(ins, result);
+				if(buddy) {
+					buddy->rank = rank;
+					buddy->busy = false;
+					dlist_push_front(ins->buckets + bucket, buddy);
+				}
+
+			}
+
 		} else {
 			result = dlist_pop_front(list);
 			result->busy = true;
 		}
+
 	}
 	return result;
 }
@@ -182,16 +205,47 @@ static inline ChunkHdr_t* __buddy_allocator_pop_chunk(BuddyAllocator_t* const in
 /**
  * @warning For debug purposes only.
  */
+void __buddy_allocator_dump_chunk(const BuddyAllocator_t* const ins, const ChunkHdr_t* chunk) {
+	const uint8_t* const raw_mem_u8ptr = (const uint8_t* const)(ins->raw_memory_ptr);
+	const uint8_t* head_u8ptr = (const uint8_t*)(chunk);
+	printf("[ Offset=%zu Rank=%u Busy=%d] -> ", head_u8ptr - raw_mem_u8ptr, chunk->rank, chunk->busy);
+}
+
 void __buddy_allocator_dump_bucket(const BuddyAllocator_t* const ins, const BucketId_t bucket) {
 	const DList_t* const list = ins->buckets + bucket;
 	const ChunkHdr_t* head = list->head;
-	const uint8_t* const raw_mem_u8ptr = (const uint8_t* const)(ins->raw_memory_ptr);
 	while(head) {
-		const uint8_t* head_u8ptr = (const uint8_t*)(head);
-		printf("[ Offset=%zu Rank=%u ] -> ", head_u8ptr - raw_mem_u8ptr, head->rank);
+		__buddy_allocator_dump_chunk(ins, head);
 		head = head->next;
 	}
 	printf("\n");
+}
+
+/**
+ * @warning For debug purposes only.
+ * @param ins The buddy allocator instance pointer. MUST NOT be null.
+ */
+void __buddy_allocator_dump(const BuddyAllocator_t* const ins) {
+	printf("==== Buddy Allocator instance ====\n");
+	printf("Struct ptr            : %p\n", ins);
+	printf("BuddyAllocator_t size : %zu\n", sizeof(*ins));
+	printf("ChunkHeader_t size    : %zu\n", sizeof(ChunkHdr_t));
+	printf("Raw mem ptr           : %p\n", ins->raw_memory_ptr);
+	printf("Raw mem rank          : %u\n", ins->raw_memory_rank);
+	printf("Max capacity          : %zu\n", buddy_allocator_capacity_max(ins));
+
+	Rank_t rank = ins->raw_memory_rank;
+	while(rank >= __BUDDY_ALLOCATOR_RANK_MIN) {
+		const Rank_t bucket = rank - __BUDDY_ALLOCATOR_RANK_MIN;
+		const size_t size = 1ull << rank;
+
+		printf("[ Bucket=%-2u", bucket);
+		printf("  Rank=%-2u", rank);
+		printf("  Size=%-8zu ] : ", size);
+
+		__buddy_allocator_dump_bucket(ins, bucket);
+		rank--;
+	}
 }
 
 
@@ -277,32 +331,5 @@ void buddy_allocator_free(BuddyAllocator_t* const ins, void* const raw_ptr) {
 	ChunkHdr_t* const chunk = __buddy_allocator_header_ptr(raw_ptr);
 	if(chunk && chunk->busy) {
 		__buddy_allocator_push_chunk(ins, chunk);
-	}
-}
-
-/**
- * @warning For debug purposes only.
- * @param ins The buddy allocator instance pointer. MUST NOT be null.
- */
-void buddy_allocator_dump(const BuddyAllocator_t* const ins) {
-	printf("==== Buddy Allocator instance ====\n");
-	printf("Struct ptr            : %p\n", ins);
-	printf("BuddyAllocator_t size : %zu\n", sizeof(*ins));
-	printf("ChunkHeader_t size    : %zu\n", sizeof(ChunkHdr_t));
-	printf("Raw mem ptr           : %p\n", ins->raw_memory_ptr);
-	printf("Raw mem rank          : %u\n", ins->raw_memory_rank);
-	printf("Raw mem capacity      : %zu\n", (size_t)(1ull << ins->raw_memory_rank));
-
-	Rank_t rank = ins->raw_memory_rank;
-	while(rank >= __BUDDY_ALLOCATOR_RANK_MIN) {
-		const Rank_t bucket = rank - __BUDDY_ALLOCATOR_RANK_MIN;
-		const size_t size = 1ull << rank;
-
-		printf("[ Bucket=%-2u", bucket);
-		printf("  Rank=%-2u", rank);
-		printf("  Size=%-8zu ] : ", size);
-
-		__buddy_allocator_dump_bucket(ins, bucket);
-		rank--;
 	}
 }
